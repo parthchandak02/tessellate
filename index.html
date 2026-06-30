@@ -1,0 +1,287 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>tessellate — time-driven kaleidoscope</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { width: 100%; height: 100%; overflow: hidden; background: #0d0a08; }
+canvas { position: fixed; top: 0; left: 0; width: 100%; height: 100%; display: block; }
+#desc {
+  position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+  font: 11px/1.6 system-ui, -apple-system, sans-serif;
+  color: rgba(255,255,255,0.3); text-align: center;
+  pointer-events: none; z-index: 10;
+  letter-spacing: 0.06em; white-space: nowrap;
+}
+@media (max-width: 640px) { #desc { font-size: 10px; white-space: normal; padding: 0 16px; } }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="desc">time-driven kaleidoscope · tap to cycle timezones</div>
+<script>
+// ─── CONFIG: Dark — Ember palette ───
+const P = {
+  bg:      '#0d0a08',
+  accent1: '#ff6d00', // orange primary
+  accent2: '#dd2c00', // deep red secondary
+  accent3: '#ffab00', // amber-gold highlight
+  glow:    '#ff9100', // glow color
+  text:    'rgba(255,255,255,0.4)',
+  trail:   0.12,      // trail alpha (higher = faster fade, crisper)
+  seeds:   8,         // seed geometry complexity
+  maxFolds:14,
+};
+
+// ─── CANVAS SETUP (DPR-aware) ───
+const cvs = document.getElementById('c');
+const ctx = cvs.getContext('2d');
+let W, H, cx, cy, dpr;
+function resize() {
+  dpr = Math.min(window.devicePixelRatio || 1, 2);
+  W = window.innerWidth; H = window.innerHeight;
+  cvs.width = W * dpr; cvs.height = H * dpr;
+  cvs.style.width = W + 'px'; cvs.style.height = H + 'px';
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  cx = W / 2; cy = H / 2;
+}
+resize();
+window.addEventListener('resize', resize);
+
+// ─── TIME DATA ───
+const timezones = [
+  'America/New_York','Europe/London','Asia/Tokyo',
+  'Australia/Sydney','Africa/Cairo','Pacific/Auckland',
+  'America/Los_Angeles','Asia/Dubai','Europe/Paris',
+  'Asia/Kolkata','America/Sao_Paulo','Pacific/Honolulu'
+];
+let tzIdx = 0;
+let td = { h:12, m:0, s:0, ms:0 };
+
+function nowMs() { return new Date().getMilliseconds(); }
+
+function localFallback() {
+  const n = new Date();
+  td = { h:n.getHours(), m:n.getMinutes(), s:n.getSeconds(), ms:n.getMilliseconds() };
+}
+
+async function fetchTime() {
+  try {
+    const r = await fetch(`https://timeapi.io/api/Time/current/zone?timeZone=${encodeURIComponent(timezones[tzIdx])}`);
+    if (!r.ok) throw Error('fail');
+    const d = await r.json();
+    td = { h:d.hour, m:d.minute, s:d.seconds, ms:d.milliSeconds ?? nowMs() };
+  } catch { localFallback(); }
+}
+fetchTime();
+setInterval(fetchTime, 30000);
+
+cvs.addEventListener('click', () => { tzIdx = (tzIdx+1) % timezones.length; fetchTime(); });
+cvs.addEventListener('touchstart', e => { e.preventDefault(); tzIdx = (tzIdx+1) % timezones.length; fetchTime(); });
+
+// ─── SEED GEOMETRY ───
+// Seeds define the base wedge that gets reflected across folds.
+// Each seed is a pair of control points defining a curve.
+class Seed {
+  constructor() {
+    this.r1 = 40 + Math.random() * Math.max(W,H) * 0.35;
+    this.r2 = this.r1 + 20 + Math.random() * 80;
+    this.a1 = Math.random() * Math.PI * 2;
+    this.a2 = this.a1 + (0.1 + Math.random() * 0.6);
+    this.wobble = 0.2 + Math.random() * 0.6;
+    this.size = 2 + Math.random() * 4;
+    this.phase = Math.random() * Math.PI * 2;
+    this.shape = Math.floor(Math.random() * 4); // 0:arc, 1:line, 2:curve, 3:poly
+    this.points = [];
+    if (this.shape === 3) {
+      for (let i = 0; i < 4; i++) {
+        const a = this.a1 + (i/4) * (this.a2 - this.a1);
+        const r = this.r1 + (this.r2 - this.r1) * (i/4);
+        this.points.push({ r, a });
+      }
+    }
+  }
+}
+
+let seeds = [];
+function initSeeds() {
+  const d = Math.max(W, H);
+  seeds = Array.from({ length: P.seeds }, () => {
+    const s = new Seed();
+    // scale radii to current viewport
+    s.r1 = 40 + Math.random() * d * 0.35;
+    s.r2 = s.r1 + 20 + Math.random() * 80;
+    return s;
+  });
+}
+initSeeds();
+window.addEventListener('resize', initSeeds);
+
+// ─── COLOR SYSTEM (Ember palette) ───
+function emberColor(t, alpha) {
+  // t: 0-1, cycles through orange → red → amber → orange
+  let r, g, b;
+  if (t < 0.33) {
+    const u = t / 0.33;
+    r = 255; g = Math.round(109 - u * 65); b = 0;
+  } else if (t < 0.66) {
+    const u = (t - 0.33) / 0.33;
+    r = Math.round(255 - u * 34); g = Math.round(44 + u * 127); b = 0;
+  } else {
+    const u = (t - 0.66) / 0.34;
+    r = Math.round(221 + u * 34); g = 171; b = 0;
+  }
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+
+function layerColor(base, alpha) {
+  return base.replace(/[\d.]+\)$/, alpha + ')');
+}
+
+// ─── DRAW ───
+let angle = 0;
+let t = 0;
+let firstFrame = true;
+
+function draw() {
+  t++;
+
+  // Full clear on first frame, then trails
+  if (firstFrame) {
+    ctx.fillStyle = P.bg;
+    ctx.fillRect(0, 0, W, H);
+    firstFrame = false;
+  } else {
+    ctx.fillStyle = `rgba(13,10,8,${P.trail})`;
+    ctx.fillRect(0, 0, W, H);
+  }
+
+  // ── Time-driven parameters ──
+  // Folds: even number 2-14 based on hour
+  const folds = Math.max(2, Math.min(P.maxFolds, ((td.h % 12) + 3) & ~1));
+  // Rotation speed: driven by minute
+  const rotSpeed = 0.08 + (td.m / 60) * 0.5;
+  // Color cycle: driven by second (0-1 per second, continuous)
+  const hueCycle = ((td.s + td.ms/1000) / 60) % 1.0;
+  // Saturation/brightness: driven by minute
+  const intensity = 0.5 + (td.m / 60) * 0.5;
+
+  angle += rotSpeed * 0.008;
+
+  // ── Center glow ──
+  const cg = ctx.createRadialGradient(cx, cy, 0, cx, cy, 100 + td.m * 3);
+  cg.addColorStop(0, `rgba(255,109,0,${0.15 * intensity})`);
+  cg.addColorStop(0.4, `rgba(221,44,0,${0.08 * intensity})`);
+  cg.addColorStop(1, 'rgba(255,109,0,0)');
+  ctx.fillStyle = cg;
+  ctx.beginPath(); ctx.arc(cx, cy, 100 + td.m * 3, 0, Math.PI * 2); ctx.fill();
+
+  // ── Draw each fold ──
+  for (let f = 0; f < folds; f++) {
+    const foldAngle = (f / folds) * Math.PI * 2 + angle;
+    const colorT = (f / folds + hueCycle * 0.15) % 1.0;
+    const col = emberColor(colorT, 0.7 * intensity);
+    const colDim = emberColor(colorT, 0.25 * intensity);
+
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(foldAngle);
+    ctx.translate(-cx, -cy);
+
+    // Draw each seed
+    for (const s of seeds) {
+      const wobX = Math.sin(t * 0.01 + s.phase) * s.wobble * 10;
+      const wobY = Math.cos(t * 0.008 + s.phase * 1.3) * s.wobble * 10;
+      const eps = 1e-6;
+
+      const x1 = cx + Math.cos(s.a1) * s.r1 + wobX;
+      const y1 = cy + Math.sin(s.a1) * s.r1 + wobY;
+      const x2 = cx + Math.cos(s.a2) * s.r2 + wobX;
+      const y2 = cy + Math.sin(s.a2) * s.r2 + wobY;
+      const mx = (x1 + x2) / 2;
+      const my = (y1 + y2) / 2;
+
+      ctx.shadowColor = P.glow;
+      ctx.shadowBlur = 12 + td.m * 0.5;
+
+      switch (s.shape) {
+        case 0: // Arc between seed points
+          ctx.beginPath();
+          ctx.arc(mx, my, Math.hypot(x1-mx, y1-my), 
+            Math.atan2(y1-my, x1-mx), Math.atan2(y2-my, x2-mx));
+          ctx.strokeStyle = col;
+          ctx.lineWidth = s.size;
+          ctx.stroke();
+          break;
+
+        case 1: // Line with glow dots
+          ctx.shadowBlur = 4;
+          ctx.beginPath();
+          ctx.moveTo(x1, y1);
+          ctx.lineTo(x2, y2);
+          ctx.strokeStyle = colDim;
+          ctx.lineWidth = s.size * 0.5;
+          ctx.stroke();
+          // End dot
+          ctx.beginPath();
+          ctx.arc(x2, y2, s.size * 0.4, 0, Math.PI * 2);
+          ctx.fillStyle = col;
+          ctx.shadowBlur = 12;
+          ctx.fill();
+          break;
+
+        case 2: // Quadratic curve
+          const cpx = cx + Math.cos((s.a1 + s.a2)/2) * (s.r1 + s.r2)/2 + wobX * 1.5;
+          const cpy = cy + Math.sin((s.a1 + s.a2)/2) * (s.r1 + s.r2)/2 + wobY * 1.5;
+          ctx.beginPath();
+          ctx.moveTo(x1, y1);
+          ctx.quadraticCurveTo(cpx, cpy, x2, y2);
+          ctx.strokeStyle = col;
+          ctx.lineWidth = s.size * 0.7;
+          ctx.stroke();
+          break;
+
+        case 3: // Polygon shape (4 connected points)
+          ctx.shadowBlur = 3;
+          ctx.beginPath();
+          for (let pi = 0; pi < s.points.length; pi++) {
+            const pt = s.points[pi];
+            const px = cx + Math.cos(pt.a) * pt.r + wobX;
+            const py = cy + Math.sin(pt.a) * pt.r + wobY;
+            pi === 0 ? ctx.moveTo(px, py) : ctx.lineTo(px, py);
+          }
+          ctx.closePath();
+          ctx.strokeStyle = col;
+          ctx.lineWidth = s.size * 0.5;
+          ctx.stroke();
+          ctx.fillStyle = layerColor(col, 0.08 * intensity);
+          ctx.fill();
+          break;
+      }
+
+      ctx.shadowBlur = 0;
+    }
+
+    ctx.restore();
+  }
+
+  // ── HUD text ──
+  ctx.fillStyle = P.text;
+  ctx.font = '10px system-ui, sans-serif';
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'bottom';
+  const pad = 14;
+  ctx.fillText(
+    `${timezones[tzIdx]}  ·  ${String(td.h).padStart(2,'0')}:${String(td.m).padStart(2,'0')}:${String(td.s).padStart(2,'0')}  ·  ${folds}-fold`,
+    pad, H - pad
+  );
+
+  requestAnimationFrame(draw);
+}
+
+draw();
+</script>
+</body>
+</html>
