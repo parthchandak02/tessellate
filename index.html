@@ -59,21 +59,53 @@ const timezones = [
 ];
 let tzIdx = 0;
 let td = { h:12, m:0, s:0, ms:0 };
+// Last known time of day in the selected zone (ms since midnight) and when we learned it,
+// so the clock keeps ticking locally between fetches
+let baseDayMs = 12 * 3600000;
+let baseAt = performance.now();
+let timeSource = 'device clock';
+let fetchSeq = 0;
 
-function nowMs() { return new Date().getMilliseconds(); }
+function setBase(h, m, s, ms) {
+  baseDayMs = ((h * 60 + m) * 60 + s) * 1000 + ms;
+  baseAt = performance.now();
+}
 
+function tick() {
+  const dayMs = (baseDayMs + (performance.now() - baseAt)) % 86400000;
+  td = {
+    h: Math.floor(dayMs / 3600000),
+    m: Math.floor(dayMs / 60000) % 60,
+    s: Math.floor(dayMs / 1000) % 60,
+    ms: Math.floor(dayMs % 1000),
+  };
+}
+
+// Fallback: the device clock, converted into the selected zone so the label stays true
 function localFallback() {
-  const n = new Date();
-  td = { h:n.getHours(), m:n.getMinutes(), s:n.getSeconds(), ms:n.getMilliseconds() };
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat('en-GB', {
+      timeZone: timezones[tzIdx], hour12: false,
+      hour: '2-digit', minute: '2-digit', second: '2-digit',
+    }).formatToParts(new Date()).map(p => [p.type, p.value])
+  );
+  setBase(Number(parts.hour) % 24, Number(parts.minute), Number(parts.second), new Date().getMilliseconds());
+  timeSource = 'device clock';
 }
 
 async function fetchTime() {
+  const seq = ++fetchSeq;
+  const zone = timezones[tzIdx];
+  // Show the new zone straight away from the device clock; the API answer refines it
+  localFallback();
   try {
-    const r = await fetch(`https://timeapi.io/api/Time/current/zone?timeZone=${encodeURIComponent(timezones[tzIdx])}`);
+    const r = await fetch(`https://timeapi.io/api/Time/current/zone?timeZone=${encodeURIComponent(zone)}`);
     if (!r.ok) throw Error('fail');
     const d = await r.json();
-    td = { h:d.hour, m:d.minute, s:d.seconds, ms:d.milliSeconds ?? nowMs() };
-  } catch { localFallback(); }
+    if (seq !== fetchSeq) return; // a newer tap or fetch has taken over
+    setBase(d.hour, d.minute, d.seconds, d.milliSeconds ?? 0);
+    timeSource = 'timeapi.io';
+  } catch { /* keep the device-clock time already set for this zone */ }
 }
 fetchTime();
 setInterval(fetchTime, 30000);
@@ -117,7 +149,18 @@ function initSeeds() {
   });
 }
 initSeeds();
-window.addEventListener('resize', initSeeds);
+let seedScaleRef = Math.max(W, H);
+window.addEventListener('resize', () => {
+  // Scale the existing seeds to the new viewport so the pattern keeps its shape
+  const d = Math.max(W, H);
+  const k = d / seedScaleRef;
+  seedScaleRef = d;
+  for (const s of seeds) {
+    s.r1 *= k; s.r2 *= k;
+    for (const p of s.points) p.r *= k;
+  }
+  firstFrame = true;
+});
 
 // ─── COLOR SYSTEM (Ember palette) ───
 function emberColor(t, alpha) {
@@ -147,6 +190,7 @@ let firstFrame = true;
 
 function draw() {
   t++;
+  tick();
 
   // Full clear on first frame, then trails
   if (firstFrame) {
@@ -274,7 +318,7 @@ function draw() {
   ctx.textBaseline = 'bottom';
   const pad = 14;
   ctx.fillText(
-    `${timezones[tzIdx]}  ·  ${String(td.h).padStart(2,'0')}:${String(td.m).padStart(2,'0')}:${String(td.s).padStart(2,'0')}  ·  ${folds}-fold`,
+    `${timezones[tzIdx]}  ·  ${String(td.h).padStart(2,'0')}:${String(td.m).padStart(2,'0')}:${String(td.s).padStart(2,'0')}  ·  ${folds}-fold  ·  ${timeSource}`,
     pad, H - pad
   );
 

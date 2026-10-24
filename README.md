@@ -45,8 +45,10 @@ trail so the motion leaves streaks. The current time in the selected time zone, 
 
 Click or tap to step through twelve time zones: New York, London, Tokyo, Sydney, Cairo,
 Auckland, Los Angeles, Dubai, Paris, Kolkata, São Paulo and Honolulu. The time is refetched
-every 30 seconds. If timeapi.io can't be reached, the browser's own clock is used, so the
-zone label may then not match the time shown.
+every 30 seconds and ticks locally in between. If timeapi.io can't be reached, the device clock
+is converted into the selected zone, so the label still matches the time, and the corner text
+says `device clock` instead of `timeapi.io`. Resizing the window rescales the seed shapes
+rather than re-rolling them.
 
 <div align="center">
 
